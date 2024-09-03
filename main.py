@@ -96,80 +96,85 @@ class BitgetDataDownloader:
 
             current_date += timedelta(days=1)
             time.sleep(self.interval_seconds)
-
+            
 class ExcelMerger:
-    def __init__(self, ticker_folder, output_file, save_as='csv', convert_timestamp=False):
+    def __init__(self, ticker_folder, ticker_name, save_as='csv', convert_timestamp=False):
         self.ticker_folder = ticker_folder
-        self.output_file = output_file
-        self.save_as = save_as.lower()  # 'csv' 또는 'excel'
+        self.ticker_name = ticker_name
+        self.save_as = save_as.lower()
         self.convert_timestamp = convert_timestamp
+        self.output_folder = os.path.join(self.ticker_folder, 'merged_files')
+        self.ensure_directory_exists(self.output_folder)
+
+    def ensure_directory_exists(self, path):
+        if not os.path.exists(path):
+            os.makedirs(path)
 
     def convert_timestamp_to_datetime(self, df):
-        """DataFrame의 timestamp를 YYYY/MM/DD HH:MM:SS 형식으로 변환합니다."""
-        df['datetime'] = pd.to_datetime(df['datetime'], unit='s').dt.strftime('%Y/%m/%d %H:%M:%S')
+        df['datetime'] = df['datetime'].dt.strftime('%Y/%m/%d %H:%M:%S')
         return df
 
     def remove_duplicate_columns(self, df):
-        """DataFrame에서 중복된 컬럼명을 제거합니다."""
         df = df.loc[:, ~df.columns.duplicated()]
         return df
 
+    def save_split_excel_files(self, df, start_date, end_date):
+        max_rows = 1048575  # Excel 한 시트의 최대 행 수
+        num_files = len(df) // max_rows + 1
+
+        for i in range(num_files):
+            split_df = df.iloc[i * max_rows:(i + 1) * max_rows]
+            output_filename = f"{self.ticker_name}_{start_date}_to_{end_date}_part{i + 1}_merged.xlsx"
+            output_path = os.path.join(self.output_folder, output_filename)
+            split_df.to_excel(output_path, index=False)
+            print(f"Saved part {i + 1} to Excel file: {output_path}")
+
     def merge_excel_files(self):
-        """지정된 티커 폴더 내의 모든 엑셀 파일을 하나로 통합하여 CSV 또는 Excel 파일로 저장합니다."""
         excel_files = [f for f in os.listdir(self.ticker_folder) if f.endswith('.xlsx')]
         dataframes = []
 
-        for file in excel_files:
+        for file in tqdm(excel_files):
             file_path = os.path.join(self.ticker_folder, file)
             print(f"Reading {file_path}...")
             df = pd.read_excel(file_path)
-
-            # 컬럼명을 변경합니다.
             df.columns = ['datetime', 'open', 'high', 'low', 'close', 'volume', 'quote_volume']
-
-            # 중복 컬럼 제거
             df = self.remove_duplicate_columns(df)
-
             dataframes.append(df)
 
         merged_df = pd.concat(dataframes, ignore_index=True)
-
-        # 중복 컬럼 최종 제거 (다시 한 번 확인)
         merged_df = self.remove_duplicate_columns(merged_df)
-
-        # 시간 순서대로 정렬
         merged_df['datetime'] = pd.to_datetime(merged_df['datetime'], unit='s')
         merged_df = merged_df.sort_values(by='datetime').reset_index(drop=True)
+        start_date = merged_df['datetime'].iloc[0].strftime('%Y%m%d')
+        end_date = merged_df['datetime'].iloc[-1].strftime('%Y%m%d')
 
-        # timestamp를 사람이 읽을 수 있는 형식으로 변환
         if self.convert_timestamp:
             merged_df = self.convert_timestamp_to_datetime(merged_df)
 
-        # 데이터 저장 (CSV 또는 Excel)
-        if self.save_as == 'excel':
-            merged_df.to_excel(self.output_file, index=False)
-            print(f"Saved merged data to Excel file: {self.output_file}")
+        if self.save_as == 'xlsx':
+            if len(merged_df) > 1048576:
+                self.save_split_excel_files(merged_df, start_date, end_date)
+            else:
+                output_filename = f"{self.ticker_name}_{start_date}_to_{end_date}_merged.xlsx"
+                output_path = os.path.join(self.output_folder, output_filename)
+                merged_df.to_excel(output_path, index=False)
+                print(f"Saved merged data to Excel file: {output_path}")
         else:
-            merged_df.to_csv(self.output_file, index=False)
-            print(f"Saved merged data to CSV file: {self.output_file}")
+            output_filename = f"{self.ticker_name}_{start_date}_to_{end_date}_merged.csv"
+            output_path = os.path.join(self.output_folder, output_filename)
+            merged_df.to_csv(output_path, index=False)
+            print(f"Saved merged data to CSV file: {output_path}")
+
 
 
 if __name__ == '__main__':
     # BTCUSDT 데이터를 2019년 7월 10일부터 현재까지 다운로드하고 압축 해제합니다.
-    downloader = BitgetDataDownloader("BTCUSDT", interval_seconds=1, max_retries=10)
-    downloader.download_and_extract_chart_data("20190710")
+    # downloader = BitgetDataDownloader("BTCUSDT", interval_seconds=1, max_retries=10)
+    # downloader.download_and_extract_chart_data("20190710")
     
-    # 다운로드된 데이터를 병합하여 하나의 Excel 파일로 저장한 뒤, 이를 다시 CSV 파일로 저장합니다.
+    # 다운로드된 데이터를 병합하여 하나의 Excel 또는 CSV 파일로 저장
     ticker_folder = './downloads/BTCUSDT'  # 다운로드된 데이터가 저장된 폴더
-    output_excel = './downloads/BTCUSDT_merged.xlsx'  # 결과를 저장할 Excel 파일 경로
-    output_csv = './downloads/BTCUSDT_merged.csv'  # 결과를 저장할 CSV 파일 경로
-    merger = ExcelMerger(ticker_folder, output_excel, output_csv, convert_timestamp=True)
+    ticker_name = 'BTCUSDT'  # 티커명 설정
+    merger = ExcelMerger(ticker_folder, ticker_name, save_as='xlsx', convert_timestamp=True)
     merger.merge_excel_files()
 
-    # 자세한 주석:
-    # - BitgetDataDownloader 클래스는 OHLCV 데이터를 다운로드하고 ZIP 파일을 압축 해제하는 작업을 수행합니다.
-    # - 다운로드 시 진행 상황과 남은 시간을 tqdm 라이브러리를 통해 표시합니다.
-    # - 10회 연속 다운로드 실패 시 작업을 중단하고, 에러 로그를 다운로드 폴더 내 error.log 파일에 기록합니다.
-    # - ExcelMerger 클래스는 다운로드된 엑셀 파일들을 병합하여 하나의 Excel 파일로 저장한 후, 이를 다시 CSV 파일로 저장합니다.
-    # - 컬럼명을 datetime, open, high, low, close, volume, quote_volume으로 변경하며, timestamp는 사람이 읽을 수 있는 형식으로 변환할 수 있습니다.
-    # - `if __name__ == '__main__'` 아래에 제공된 예제는 BTCUSDT 티커 데이터를 2019년 7월 10일부터 현재까지 다운로드하고, 모든 데이터를 병합하여 Excel 파일과 CSV 파일로 저장하는 전체 프로세스를 보여줍니다.
